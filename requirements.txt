@@ -1,9 +1,6 @@
 streamlit
 pandas
 requests
-SpeechRecognition
 dateparser
-pyaudio
+SpeechRecognition
 python-dotenv
-numpy
-gunicorn
