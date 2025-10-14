@@ -268,3 +268,37 @@ if st.button("Parse and Add"):
                 st.error("❌ Failed to update GitHub")
 
                 st.code(text)
+
+
+st.subheader("🗑️ Delete Event")
+
+# Reload latest for accurate options
+latest_df = load_schedule_from_github(token)
+
+# Build a label for each row
+latest_df["Label"] = latest_df.apply(
+    lambda row: f"{row['Date']} | {row['Weekday']} | {row['Name']} - {row['Activity']} @ {row['Time']}", axis=1
+)
+
+selected_label = st.selectbox("Select event to delete", options=latest_df["Label"].tolist())
+
+if st.button("Delete Selected Event"):
+    # Find the row to delete
+    to_delete = latest_df[latest_df["Label"] == selected_label]
+    if to_delete.empty:
+        st.warning("No matching event found.")
+    else:
+        updated_df = latest_df[latest_df["Label"] != selected_label].drop(columns=["Label"]).reset_index(drop=True)
+        st.write("📦 Updated CSV preview after deletion:")
+        st.dataframe(updated_df.head(100))
+
+        if not token:
+            st.error("Missing GITHUB_TOKEN in secrets.toml; cannot push to GitHub.")
+        else:
+            ok, code, text = update_schedule_on_github(updated_df, token, message="Delete event")
+            st.write(f"GitHub response: {code}")
+            if ok:
+                st.success("✅ Event deleted successfully!")
+            else:
+                st.error("❌ Failed to update GitHub")
+                st.code(text)
