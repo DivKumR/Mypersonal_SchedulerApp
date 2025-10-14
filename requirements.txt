@@ -1,0 +1,9 @@
+streamlit
+pandas
+requests
+SpeechRecognition
+dateparser
+pyaudio
+python-dotenv
+numpy
+gunicorn
