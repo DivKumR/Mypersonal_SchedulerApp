@@ -112,9 +112,16 @@ def update_schedule_on_github(df, token, message="Update schedule"):
 def get_voice_input():
     recognizer = sr.Recognizer()
     try:
+        # Check if microphone is available (skip if running on cloud)
+        try:
+            import pyaudio  # runtime check only
+        except ImportError:
+            st.warning("🎤 Microphone not available in this environment. Try uploading audio or using text input.")
+            return ""
+
         with sr.Microphone() as source:
             st.info("🎤 Listening...")
-            audio = recognizer.listen(source)
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=30)
         text = recognizer.recognize_google(audio)
         st.success(f"🗣️ You said: {text}")
         return text
@@ -259,4 +266,5 @@ if st.button("Parse and Add"):
                 latest_df = load_schedule_from_github(token)
             else:
                 st.error("❌ Failed to update GitHub")
+
                 st.code(text)
