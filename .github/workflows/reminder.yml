@@ -2,7 +2,7 @@ name: Event Reminders
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # every day
+    - cron: "0 14 * * *"   # every day
   workflow_dispatch:      # manual trigger
 
 jobs:
