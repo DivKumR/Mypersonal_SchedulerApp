@@ -38,26 +38,51 @@ def send_push(message):
     }
     requests.post(url, data=data)
 
+def normalize_time(time_str):
+    """Convert various time formats into something pandas can parse."""
+    if pd.isna(time_str):
+        return ""
+
+    t = str(time_str).strip().lower()
+
+    # Handle special cases
+    if t in ["", "now"]:
+        return ""
+
+    # Convert "10 am" → "10:00 AM"
+    if "am" in t or "pm" in t:
+        return t.replace(" ", "")
+
+    # Convert "2.15 to 3.45" → ignore time, treat as all-day event
+    if "to" in t:
+        return ""
+
+    return t
+
 def check_events():
     df = pd.read_csv(CSV_URL)
-    now = datetime.datetime.now()
+    now = datetime.datetime.utcnow()  # GitHub Actions uses UTC
 
     for _, row in df.iterrows():
         date = row["Date"]
-        time = row["Time"]
+        time = normalize_time(row["Time"])
 
         if pd.isna(date):
             continue
 
         try:
-            event_dt = pd.to_datetime(f"{date} {time}") if time else pd.to_datetime(date)
+            # If time is empty, parse date only
+            if time == "":
+                event_dt = pd.to_datetime(date)
+            else:
+                event_dt = pd.to_datetime(f"{date} {time}")
         except:
             continue
 
         diff = event_dt - now
 
-        # 1 day reminder ONLY
-        if datetime.timedelta(seconds=1) < diff <= datetime.timedelta(days=1):
+        # Trigger if event is within the next 24 hours
+        if datetime.timedelta(0) < diff <= datetime.timedelta(days=1):
             msg = f"Event tomorrow: {row['Activity']} for {row['Name']} at {row['Time']}"
             send_email("Reminder: Event Tomorrow", msg)
             send_push(msg)
