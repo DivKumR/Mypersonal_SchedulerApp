@@ -75,7 +75,7 @@ def check_events():
             if time == "":
                 event_dt = pd.to_datetime(date)
             else:
-                event_dt = pd.to_datetime(f"{date} {time}")
+                event_dt = datetime.datetime.strptime(f"{date} {time}", "%Y-%m-%d %I %p")
         except:
             continue
 
