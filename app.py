@@ -219,7 +219,8 @@ if st.button("Add Event"):
     latest_df = load_schedule_from_github(token)
     # normalize types
     new_rows["Date"] = pd.to_datetime(new_rows["Date"]).dt.date
-    combined_df = pd.concat([latest_df, new_rows], ignore_index=True).reset_index(drop=True)
+    combined_df = pd.concat([latest_df, new_rows], ignore_index=True)
+    combined_df = combined_df.sort_values("Date").reset_index(drop=True)
     # show preview
     st.write("📦 Preview of CSV to be uploaded:")
     st.dataframe(combined_df.fillna("").head(200))
@@ -288,7 +289,8 @@ if st.button("Delete Selected Event"):
     if to_delete.empty:
         st.warning("No matching event found.")
     else:
-        updated_df = latest_df[latest_df["Label"] != selected_label].drop(columns=["Label"]).reset_index(drop=True)
+        updated_df = latest_df[latest_df["Label"] != selected_label].drop(columns=["Label"])
+        updated_df = updated_df.sort_values("Date").reset_index(drop=True)
         st.write("📦 Updated CSV preview after deletion:")
         st.dataframe(updated_df.head(100))
 
