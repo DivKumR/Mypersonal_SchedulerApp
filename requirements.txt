@@ -1,4 +1,5 @@
-streamlit
+streamlit>=1.37
 pandas
 requests
 dateparser
+tzdata>=2024.1

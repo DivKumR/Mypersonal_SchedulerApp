@@ -10,6 +10,8 @@ A mobile-friendly Streamlit scheduler that stores events in `schedule.csv` on Gi
 4. Use **Calendar** to browse events and download `schedule.ics` for Apple Calendar, Google Calendar, or Outlook.
 5. Use **Manage** to delete an event.
 
+The **Today** tab shows a countdown to the next event. The **Calendar** tab can sort events chronologically with **Upcoming first** or reverse the order with **Latest first**.
+
 On iPhone or Android, use the browser's **Add to Home Screen** command for app-like access.
 
 ## Download and run locally
@@ -50,9 +52,12 @@ Create `.streamlit/secrets.toml`:
 
 ```toml
 GITHUB_TOKEN = "your-github-token"
+SCHEDULER_TIMEZONE = "UTC"
 ```
 
 Use a fine-grained GitHub personal access token with **Contents: Read and write** access to this repository. The secrets file is ignored by Git and must never be committed.
+
+Set `SCHEDULER_TIMEZONE` to an [IANA timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), such as `America/Chicago`, `Europe/London`, or `Asia/Kolkata`. It controls today's date and the next-event countdown.
 
 ### 5. Start the app
 
@@ -71,6 +76,7 @@ Open the local URL displayed by Streamlit, usually `http://localhost:8501`.
 
 ```toml
 GITHUB_TOKEN = "your-github-token"
+SCHEDULER_TIMEZONE = "UTC"
 ```
 
 5. Deploy and open the generated `https://...streamlit.app` URL.
@@ -89,6 +95,22 @@ Meeting next Monday 2pm to 3pm
 
 When no end time is supplied, the event lasts one hour. Overlapping events are rejected.
 
+## Notifications
+
+The app includes two reminder mechanisms:
+
+- The **Today** tab refreshes its next-event countdown every 30 seconds while the app is open.
+- The `Event Reminders` GitHub Actions workflow checks every 15 minutes and can send email or Pushover notifications while the app is closed.
+
+To enable background notifications, configure either or both of these GitHub Actions secrets in the repository settings:
+
+| Channel | Required secrets |
+| --- | --- |
+| SendGrid email | `SENDGRID_API_KEY`, `TO_EMAIL`, `FROM_EMAIL` |
+| Pushover | `PUSHOVER_TOKEN`, `PUSHOVER_USER` |
+
+Also create an Actions repository variable named `SCHEDULER_TIMEZONE` using the same IANA timezone configured for the app. It defaults to `UTC`. GitHub Actions schedules can run a few minutes late, so reminders are best-effort rather than exact alarms.
+
 ## CSV format
 
 The application expects this header:
@@ -98,6 +120,8 @@ EventId,Date,Weekday,Name,Activity,StartTime,EndTime
 ```
 
 Do not rename these columns. Existing rows without an ID or end time are normalized when loaded.
+
+Event IDs are positive sequential numbers. Legacy UUID IDs are migrated automatically, and each new event uses the next number after the current maximum.
 
 ## Validate changes
 

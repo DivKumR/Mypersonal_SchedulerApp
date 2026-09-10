@@ -1,4 +1,4 @@
-# Existing rows get a generated UUID.
+# Existing rows get stable sequential IDs.
 # The former Time value becomes StartTime.
 # Existing events without an end time default to one hour.
 # Back-to-back events are allowed.
@@ -7,7 +7,6 @@
 
 from datetime import date, datetime, time
 from typing import Optional
-from uuid import uuid4
 
 import pandas as pd
 
@@ -55,6 +54,55 @@ def format_time(value) -> str:
 	return normalized.strftime("%H:%M") if normalized else ""
 
 
+def _parse_event_id(value) -> Optional[int]:
+	if value is None or pd.isna(value):
+		return None
+
+	text = str(value).strip()
+	if not text:
+		return None
+
+	try:
+		numeric_value = float(text)
+	except ValueError:
+		return None
+
+	if not numeric_value.is_integer() or numeric_value <= 0:
+		return None
+
+	return int(numeric_value)
+
+
+def _normalize_event_ids(values: pd.Series) -> pd.Series:
+	parsed_ids = []
+	reserved_ids = set()
+
+	for value in values:
+		parsed_id = _parse_event_id(value)
+		if parsed_id is None or parsed_id in reserved_ids:
+			parsed_ids.append(None)
+		else:
+			parsed_ids.append(parsed_id)
+			reserved_ids.add(parsed_id)
+
+	next_id = max(reserved_ids, default=0) + 1
+	for index, parsed_id in enumerate(parsed_ids):
+		if parsed_id is not None:
+			continue
+
+		while next_id in reserved_ids:
+			next_id += 1
+		parsed_ids[index] = next_id
+		reserved_ids.add(next_id)
+		next_id += 1
+
+	return pd.Series(
+		[str(event_id) for event_id in parsed_ids],
+		index=values.index,
+		dtype="object",
+	)
+
+
 def sanitize_schedule_df(df: Optional[pd.DataFrame]) -> pd.DataFrame:
 	if df is None:
 		return pd.DataFrame(columns=COLUMNS)
@@ -100,9 +148,7 @@ def sanitize_schedule_df(df: Optional[pd.DataFrame]) -> pd.DataFrame:
 
 	result["EndTime"] = result.apply(calculate_end_time, axis=1)
 
-	for index in result.index:
-		if not str(result.at[index, "EventId"]).strip():
-			result.at[index, "EventId"] = str(uuid4())
+	result["EventId"] = _normalize_event_ids(result["EventId"])
 
 	return result.reset_index(drop=True)
 
@@ -202,8 +248,11 @@ end_time: time,
 		)
 		raise ValueError(f"Schedule conflict with: {conflict_names}")
 
+	numeric_ids = current["EventId"].apply(_parse_event_id).dropna()
+	next_event_id = int(numeric_ids.max()) + 1 if not numeric_ids.empty else 1
+
 	event = {
-		"EventId": str(uuid4()),
+		"EventId": str(next_event_id),
 		"Date": event_date,
 		"Weekday": event_date.strftime("%A"),
 		"Name": name.strip(),

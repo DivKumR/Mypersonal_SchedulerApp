@@ -1,7 +1,9 @@
-import pandas as pd
-import datetime
-import requests
 import os
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import pandas as pd
+import requests
 
 CSV_URL = "https://raw.githubusercontent.com/DivKumR/Mypersonal_SchedulerApp/main/schedule.csv"
 
@@ -11,9 +13,12 @@ FROM_EMAIL = os.getenv("FROM_EMAIL")
 
 PUSHOVER_TOKEN = os.getenv("PUSHOVER_TOKEN")
 PUSHOVER_USER = os.getenv("PUSHOVER_USER")
+SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "UTC")
+REMINDER_MINUTES = int(os.getenv("REMINDER_MINUTES", "15"))
+
 
 def send_email(subject, body):
-    if not EMAIL_API_KEY:
+    if not EMAIL_API_KEY or not TO_EMAIL or not FROM_EMAIL:
         return
 
     url = "https://api.sendgrid.com/v3/mail/send"
@@ -24,7 +29,9 @@ def send_email(subject, body):
         "subject": subject,
         "content": [{"type": "text/plain", "value": body}]
     }
-    requests.post(url, headers=headers, json=data)
+    response = requests.post(url, headers=headers, json=data, timeout=30)
+    response.raise_for_status()
+
 
 def send_push(message):
     if not PUSHOVER_TOKEN or not PUSHOVER_USER:
@@ -36,7 +43,9 @@ def send_push(message):
         "user": PUSHOVER_USER,
         "message": message
     }
-    requests.post(url, data=data)
+    response = requests.post(url, data=data, timeout=30)
+    response.raise_for_status()
+
 
 def normalize_time(time_str):
     """Convert various time formats into something pandas can parse."""
@@ -59,35 +68,50 @@ def normalize_time(time_str):
 
     return t
 
+
+def get_scheduler_timezone():
+    try:
+        return ZoneInfo(SCHEDULER_TIMEZONE)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            f"Unknown SCHEDULER_TIMEZONE: {SCHEDULER_TIMEZONE}"
+        ) from exc
+
+
 def check_events():
     df = pd.read_csv(CSV_URL)
-    now = datetime.datetime.utcnow()  # GitHub Actions uses UTC
+    scheduler_timezone = get_scheduler_timezone()
+    now = datetime.now(scheduler_timezone)
 
     for _, row in df.iterrows():
         event_date = row["Date"]
         start_time = normalize_time(row["StartTime"])
 
-        if pd.isna(event_date):
+        if pd.isna(event_date) or not start_time:
             continue
 
         try:
-            # If time is empty, parse date only
-            if start_time == "":
-                event_dt = pd.to_datetime(event_date)
-            else:
-                event_dt = pd.to_datetime(f"{event_date} {start_time}")
+            parsed_date = pd.to_datetime(event_date).date()
+            parsed_time = pd.to_datetime(start_time).time()
+            event_dt = datetime.combine(
+                parsed_date,
+                parsed_time,
+                tzinfo=scheduler_timezone,
+            )
         except (TypeError, ValueError):
             continue
 
         diff = event_dt - now
 
-        # Trigger if event is within the next 24 hours
-        if datetime.timedelta(0) < diff <= datetime.timedelta(days=1):
+        if timedelta(0) <= diff < timedelta(minutes=REMINDER_MINUTES):
+            minutes_until = max(1, int(diff.total_seconds() // 60) + 1)
             msg = (
-                f"Event tomorrow: {row['Activity']} for {row['Name']} "
-                f"at {row['StartTime']}"
+                f"{row['Activity']} for {row['Name']} starts in "
+                f"{minutes_until} minute(s) at {row['StartTime']}."
             )
-            send_email("Reminder: Event Tomorrow", msg)
+            send_email(f"Reminder: {row['Activity']}", msg)
             send_push(msg)
 
-check_events()
+
+if __name__ == "__main__":
+    check_events()

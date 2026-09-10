@@ -2,18 +2,18 @@ name: Event Reminders
 
 on:
   schedule:
-    - cron: "0 14 * * *"   # every day
-  workflow_dispatch:      # manual trigger
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
   remind:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
@@ -27,4 +27,6 @@ jobs:
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          SCHEDULER_TIMEZONE: ${{ vars.SCHEDULER_TIMEZONE || 'UTC' }}
+          REMINDER_MINUTES: "15"
         run: python reminder.py

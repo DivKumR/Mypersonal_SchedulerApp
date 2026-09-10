@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import dateparser
 import pandas as pd
@@ -138,13 +139,74 @@ def save_event(token, event_date, name, activity, start_time, end_time):
     return ok, status_code, response_text
 
 
+def get_setting(name, default=None):
+    try:
+        return st.secrets.get(name, os.getenv(name, default))
+    except StreamlitSecretNotFoundError:
+        return os.getenv(name, default)
+
+
+def get_next_event(dataframe, current_time):
+    upcoming_events = []
+
+    for _, event_row in dataframe.iterrows():
+        start = format_time(event_row["StartTime"])
+        if not event_row["Date"] or not start:
+            continue
+
+        event_start = datetime.combine(
+            event_row["Date"],
+            datetime.strptime(start, "%H:%M").time(),
+            tzinfo=current_time.tzinfo,
+        )
+        if event_start >= current_time:
+            upcoming_events.append((event_start, event_row))
+
+    if not upcoming_events:
+        return None
+
+    return min(upcoming_events, key=lambda item: item[0])
+
+
+@st.fragment(run_every="30s")
+def render_next_event_timer(dataframe, app_timezone):
+    current_time = datetime.now(app_timezone)
+    next_event = get_next_event(dataframe, current_time)
+
+    if next_event is None:
+        st.info("No upcoming events.")
+        return
+
+    event_start, event_row = next_event
+    remaining_seconds = max(0, int((event_start - current_time).total_seconds()))
+    days, remainder = divmod(remaining_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if days:
+        countdown = f"{days}d {hours}h {minutes}m"
+    elif hours:
+        countdown = f"{hours}h {minutes}m {seconds}s"
+    else:
+        countdown = f"{minutes}m {seconds}s"
+
+    st.metric("Next event", event_row["Activity"], countdown)
+    st.caption(
+        f"{event_start.strftime('%a, %d %b %Y at %H:%M')} · "
+        f"{event_row['Name']}"
+    )
+
+
 st.set_page_config(page_title="Daily Scheduler", layout="centered")
 st.title("Daily Scheduler")
 
+token = get_setting("GITHUB_TOKEN")
+timezone_name = get_setting("SCHEDULER_TIMEZONE", "UTC")
 try:
-    token = st.secrets.get("GITHUB_TOKEN", os.getenv("GITHUB_TOKEN"))
-except StreamlitSecretNotFoundError:
-    token = os.getenv("GITHUB_TOKEN")
+    app_timezone = ZoneInfo(timezone_name)
+except ZoneInfoNotFoundError:
+    st.warning(f"Unknown timezone '{timezone_name}'; using UTC.")
+    app_timezone = timezone.utc
 
 latest_df = load_schedule_from_github(token)
 
@@ -153,7 +215,11 @@ today_tab, add_tab, calendar_tab, manage_tab = st.tabs(
 )
 
 with today_tab:
-    today_df = latest_df[latest_df["Date"] == date.today()].sort_values(
+    render_next_event_timer(latest_df, app_timezone)
+    st.divider()
+
+    local_today = datetime.now(app_timezone).date()
+    today_df = latest_df[latest_df["Date"] == local_today].sort_values(
         by="StartTime"
     )
     if today_df.empty:
@@ -166,19 +232,18 @@ with today_tab:
         )
 
 with add_tab:
-    selected_name = st.selectbox(
+    selected_name = st.text_input(
         "Name",
-        ["Dhiviya", "Family", "Personal"],
         key="event_name",
     )
 
-    gym_column, study_column, work_column = st.columns(3)
-    if gym_column.button("Gym", use_container_width=True):
-        st.session_state["manual_activity"] = "Gym"
-    if study_column.button("Study", use_container_width=True):
-        st.session_state["manual_activity"] = "Study"
-    if work_column.button("Work", use_container_width=True):
-        st.session_state["manual_activity"] = "Work"
+    sports_column, school_column, personal_column = st.columns(3)
+    if sports_column.button("Sports", use_container_width=True):
+        st.session_state["manual_activity"] = "Sports"
+    if school_column.button("School", use_container_width=True):
+        st.session_state["manual_activity"] = "School"
+    if personal_column.button("Personal", use_container_width=True):
+        st.session_state["manual_activity"] = "Personal"
 
     quick_entry = st.text_input(
         "Quick Add",
@@ -238,6 +303,11 @@ with add_tab:
                 st.error(f"Unable to create event: {exc}")
 
 with calendar_tab:
+    sort_order = st.radio(
+        "Sort order",
+        ["Upcoming first", "Latest first"],
+        horizontal=True,
+    )
     weekday_filter = st.selectbox(
         "Filter by Weekday",
         [
@@ -257,6 +327,7 @@ with calendar_tab:
 
     display_df = display_df.sort_values(
         by=["Date", "StartTime"],
+        ascending=sort_order == "Upcoming first",
         na_position="last",
     ).reset_index(drop=True)
     st.dataframe(
