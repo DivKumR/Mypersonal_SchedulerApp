@@ -1,260 +1,361 @@
-import streamlit as st
-import pandas as pd
 import base64
-import requests
-import speech_recognition as sr
-import dateparser
-from datetime import timedelta
+from datetime import date, time
+from io import StringIO
 
-# --- Config
+import pandas as pd
+import requests
+import streamlit as st
+
+from agent.schemas import AgentAction
+from agent.scheduler_agent import scheduler_agent
+from services.schedule_service import (
+    COLUMNS,
+    check_conflicts,
+    create_event,
+    format_time,
+    get_events,
+    sanitize_schedule_df,
+)
+
+
 REPO = "DivKumR/Mypersonal_SchedulerApp"
 PATH = "schedule.csv"
 API_URL = f"https://api.github.com/repos/{REPO}/contents/{PATH}"
-COLUMNS = ["Date", "Weekday", "Name", "Activity", "Time"]
 
-# --- Helpers
+
 def fetch_remote_csv_via_api(token):
     headers = {"Authorization": f"token {token}"} if token else {}
-    r = requests.get(API_URL, headers=headers)
-    if r.status_code == 200:
-        j = r.json()
-        content_b64 = j.get("content", "")
-        try:
-            raw = base64.b64decode(content_b64).decode("utf-8")
-            from io import StringIO
-            df = pd.read_csv(StringIO(raw), dtype=str)
-        except Exception:
-            df = pd.DataFrame(columns=COLUMNS)
-        return df, j.get("sha")
-    return None, None
+    response = requests.get(API_URL, headers=headers, timeout=30)
+    if response.status_code != 200:
+        return None, None
 
-def sanitize_remote_df(df):
-    if df is None:
-        return pd.DataFrame(columns=COLUMNS)
+    payload = response.json()
+    try:
+        raw = base64.b64decode(payload.get("content", "")).decode("utf-8")
+        dataframe = pd.read_csv(StringIO(raw), dtype=str)
+    except Exception:
+        dataframe = pd.DataFrame(columns=COLUMNS)
 
-    df = df.loc[:, ~df.columns.str.lower().str.contains("^unnamed")]
+    return dataframe, payload.get("sha")
 
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = pd.NA
-
-    df = df[COLUMNS].copy()
-
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-    df["Weekday"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%A")
-
-    return df.reset_index(drop=True)
 
 def load_schedule_from_github(token=None):
     if token:
-        df, sha = fetch_remote_csv_via_api(token)
-        if df is not None:
-            return sanitize_remote_df(df)
+        dataframe, _ = fetch_remote_csv_via_api(token)
+        if dataframe is not None:
+            return sanitize_schedule_df(dataframe)
 
     raw_url = f"https://raw.githubusercontent.com/{REPO}/main/{PATH}"
     try:
-        df = pd.read_csv(raw_url, dtype=str)
+        dataframe = pd.read_csv(raw_url, dtype=str)
     except Exception:
         return pd.DataFrame(columns=COLUMNS)
 
-    return sanitize_remote_df(df)
+    return sanitize_schedule_df(dataframe)
+
 
 def get_github_sha(token):
-    headers = {"Authorization": f"token {token}"} if token else {}
-    r = requests.get(API_URL, headers=headers)
-    if r.status_code == 200:
-        return r.json().get("sha")
+    headers = {"Authorization": f"token {token}"}
+    response = requests.get(API_URL, headers=headers, timeout=30)
+    if response.status_code == 200:
+        return response.json().get("sha")
     return None
 
-def update_schedule_on_github(df, token, message="Update schedule"):
+
+def update_schedule_on_github(dataframe, token, message="Update schedule"):
     if not token:
         return False, None, "Missing token"
 
-    upload_df = df.copy()
-    upload_df["Date"] = upload_df["Date"].apply(lambda d: "" if pd.isna(d) else str(d))
-
+    upload_df = sanitize_schedule_df(dataframe)
+    upload_df["Date"] = upload_df["Date"].apply(
+        lambda value: "" if pd.isna(value) else str(value)
+    )
     csv_content = upload_df.to_csv(index=False)
     encoded = base64.b64encode(csv_content.encode("utf-8")).decode("utf-8")
 
-    sha = get_github_sha(token)
     payload = {"message": message, "content": encoded}
+    sha = get_github_sha(token)
     if sha:
         payload["sha"] = sha
 
-    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
-    r = requests.put(API_URL, json=payload, headers=headers)
-    return r.status_code in (200, 201), r.status_code, r.text
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    response = requests.put(
+        API_URL,
+        json=payload,
+        headers=headers,
+        timeout=30,
+    )
+    return (
+        response.status_code in (200, 201),
+        response.status_code,
+        response.text,
+    )
 
-def parse_event(text):
-    import re
-    pattern = re.search(r"add\s+(.+?)\s+(?:on\s+(.+?)\s+)?for\s+(.+?)(?:\s+at\s+(.+))?$", text, re.IGNORECASE)
-    if not pattern:
-        return None
 
-    activity = pattern.group(1).strip()
-    date_phrase = pattern.group(2).strip() if pattern.group(2) else "today"
-    name = pattern.group(3).strip()
-    time = pattern.group(4).strip() if pattern.group(4) else ""
+def show_github_error(status_code, response_text):
+    st.error(f"GitHub update failed with status {status_code}.")
+    if response_text:
+        st.code(response_text)
 
-    parsed = dateparser.parse(date_phrase)
-    if not parsed:
-        return None
 
-    date = parsed.date()
-    weekday = pd.to_datetime(date).strftime("%A")
+def format_event_label(event_row):
+    return (
+        f"{event_row['Date']} | {event_row['Name']} | "
+        f"{event_row['Activity']} | "
+        f"{format_time(event_row['StartTime'])}-"
+        f"{format_time(event_row['EndTime'])}"
+    )
 
-    return {"Date": date, "Weekday": weekday, "Name": name, "Activity": activity, "Time": time}
 
-def expand_recurring_events(date, name, activity, time, recurrence, repeat_count):
-    rows = []
-    for i in range(repeat_count):
-        if recurrence == "Daily":
-            new_date = date + timedelta(days=i)
-        elif recurrence == "Weekly":
-            new_date = date + timedelta(weeks=i)
-        else:
-            new_date = date
-        rows.append([new_date, pd.to_datetime(new_date).strftime("%A"), name, activity, time])
-    return pd.DataFrame(rows, columns=COLUMNS)
-
-# --- UI
 st.set_page_config(page_title="Daily Scheduler", layout="centered")
-st.title("📅 Daily Scheduler")
+st.title("Daily Scheduler")
 
 token = st.secrets.get("GITHUB_TOKEN", None)
 latest_df = load_schedule_from_github(token)
 
-# Display
-display_df = latest_df.copy()
+st.subheader("Schedule")
+weekday_filter = st.selectbox(
+    "Filter by Weekday",
+    [
+        "All",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ],
+)
 
-st.subheader("📊 Filter and Sort")
-weekday_filter = st.selectbox("Filter by Weekday", ["All"] + ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"])
+display_df = latest_df.copy()
 if weekday_filter != "All":
     display_df = display_df[display_df["Weekday"] == weekday_filter]
 
-display_df = display_df.fillna("")
-weekday_order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-display_df["Weekday_cat"] = pd.Categorical(display_df["Weekday"].replace("", pd.NA), categories=weekday_order, ordered=True)
+display_df = display_df.sort_values(
+    by=["Date", "StartTime"],
+    na_position="last",
+).reset_index(drop=True)
+st.dataframe(display_df.fillna(""), use_container_width=True, hide_index=True)
 
-if "Time" in display_df.columns:
-    display_df = display_df.sort_values(["Weekday_cat","Time"], na_position="last").drop(columns=["Weekday_cat"])
-else:
-    display_df = display_df.sort_values(["Weekday_cat"], na_position="last").drop(columns=["Weekday_cat"])
 
-st.dataframe(display_df.replace({pd.NA:""}).fillna(""))
+st.subheader("Add Event Manually")
+manual_name = st.text_input("Name", key="manual_name")
+manual_activity = st.text_input("Activity", key="manual_activity")
+manual_date = st.date_input("Date", key="manual_date")
+manual_start_time = st.time_input("Start time", key="manual_start_time")
+manual_end_time = st.time_input("End time", key="manual_end_time")
 
-# Weekly Calendar
-st.subheader("🗓️ Weekly Calendar View")
-if not display_df.empty:
-    pivot_df = display_df.copy()
-    pivot_df["Time"] = pivot_df["Time"].astype(str)
-    pivot_df["Weekday"] = pivot_df["Weekday"].astype(str)
-    try:
-        calendar_df = pivot_df.pivot_table(index="Time", columns="Weekday", values="Activity",
-                                           aggfunc=lambda x: ", ".join(x.dropna().astype(str)))
-        st.dataframe(calendar_df.fillna(""))
-    except Exception:
-        st.write("No events to show in calendar.")
-else:
-    st.write("No events to show in calendar.")
-
-# Manual Add
-st.subheader("➕ Add Event Manually")
-name = st.text_input("Name")
-activity = st.text_input("Activity")
-time_val = st.text_input("Time")
-date_val = st.date_input("Date")
-recurrence = st.selectbox("Repeat", ["None","Daily","Weekly"])
-repeat_count = st.number_input("Repeat how many times?", min_value=1, max_value=30, value=1)
-
-if st.button("Add Event"):
-    new_rows = expand_recurring_events(date_val, name, activity, time_val, recurrence, repeat_count)
-
-    latest_df = load_schedule_from_github(token)
-    new_rows["Date"] = pd.to_datetime(new_rows["Date"], errors="coerce").dt.date
-
-    combined_df = pd.concat([latest_df, new_rows], ignore_index=True)
-
-    combined_df["Date"] = pd.to_datetime(combined_df["Date"], errors="coerce").dt.date
-    combined_df = combined_df.sort_values("Date").reset_index(drop=True)
-
-    st.write("📦 Preview of CSV to be uploaded:")
-    st.dataframe(combined_df.fillna("").head(200))
-
+if st.button("Add Event", key="add_manual_event"):
     if not token:
-        st.error("Missing GITHUB_TOKEN in secrets.toml; cannot push to GitHub.")
+        st.error("GITHUB_TOKEN is required to save the event.")
     else:
-        ok, code, text = update_schedule_on_github(combined_df, token, message="Add event(s) via UI")
-        st.write(f"GitHub response: {code}")
-        if ok:
-            st.success("✅ Event(s) added!")
-        else:
-            st.error("❌ Failed to update GitHub")
-            st.code(text)
+        try:
+            current_df = load_schedule_from_github(token)
+            updated_df, created_event = create_event(
+                current_df,
+                event_date=manual_date,
+                name=manual_name,
+                activity=manual_activity,
+                start_time=manual_start_time,
+                end_time=manual_end_time,
+            )
+            st.write("Preview of the schedule to be uploaded:")
+            st.dataframe(
+                updated_df.fillna(""),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-# NLP Add
-st.subheader("🧠 Smart Add via Natural Language")
-nl_input = st.text_input("e.g. Add gym on Wednesday for Vinoth")
-
-if st.button("Parse and Add"):
-    parsed = parse_event(nl_input)
-    if not parsed:
-        st.warning("Could not parse input. Try: Add gym on Wednesday for Vinoth")
-    else:
-        new_row = pd.DataFrame([parsed], columns=COLUMNS)
-
-        latest_df = load_schedule_from_github(token)
-        new_row["Date"] = pd.to_datetime(new_row["Date"], errors="coerce").dt.date
-
-        combined_df = pd.concat([latest_df, new_row], ignore_index=True)
-
-        combined_df["Date"] = pd.to_datetime(combined_df["Date"], errors="coerce").dt.date
-        combined_df = combined_df.sort_values("Date").reset_index(drop=True)
-
-        st.write("📦 Preview of CSV to be uploaded:")
-        st.dataframe(combined_df.fillna("").head(200))
-
-        if not token:
-            st.error("Missing GITHUB_TOKEN in secrets.toml; cannot push to GitHub.")
-        else:
-            ok, code, text = update_schedule_on_github(combined_df, token, message="Add event via NLP")
-            st.write(f"GitHub response: {code}")
+            ok, status_code, response_text = update_schedule_on_github(
+                updated_df,
+                token,
+                message=f"Create event: {created_event['EventId']}",
+            )
             if ok:
-                st.success("✅ Event added from natural input!")
+                st.success("Event created successfully.")
+                st.rerun()
             else:
-                st.error("❌ Failed to update GitHub")
-                st.code(text)
+                show_github_error(status_code, response_text)
+        except requests.RequestException as exc:
+            st.error(f"GitHub request failed: {exc}")
+        except (ValueError, TypeError) as exc:
+            st.error(f"Unable to create event: {exc}")
 
-# Delete Event
-st.subheader("🗑️ Delete Event")
 
-latest_df = load_schedule_from_github(token)
-latest_df["Label"] = latest_df.apply(
-    lambda row: f"{row['Date']} | {row['Weekday']} | {row['Name']} - {row['Activity']} @ {row['Time']}", axis=1
+st.subheader("Scheduling Agent")
+agent_request = st.text_input(
+    "Scheduling request",
+    placeholder="Schedule a project review tomorrow from 10:00 to 11:00",
 )
 
-selected_label = st.selectbox("Select event to delete", options=latest_df["Label"].tolist())
+if st.button("Ask Scheduler Agent", key="ask_scheduler_agent"):
+    agent_response = scheduler_agent.invoke(agent_request)
+    st.info(agent_response.message)
 
-if st.button("Delete Selected Event"):
-    to_delete = latest_df[latest_df["Label"] == selected_label]
-    if to_delete.empty:
-        st.warning("No matching event found.")
-    else:
-        updated_df = latest_df[latest_df["Label"] != selected_label].drop(columns=["Label"])
+    if agent_response.action == AgentAction.GET_EVENTS:
+        event_date = agent_response.event.date if agent_response.event else None
+        event_name = agent_response.event.name if agent_response.event else None
+        matching_events = get_events(
+            latest_df,
+            event_date=event_date,
+            name=event_name,
+        )
+        st.dataframe(
+            matching_events.fillna(""),
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif (
+        agent_response.action == AgentAction.CREATE_EVENT
+        and agent_response.requires_confirmation
+        and agent_response.event is not None
+    ):
+        event = agent_response.event
+        st.session_state["pending_agent_event"] = {
+            "date": event.date.isoformat(),
+            "name": event.name,
+            "activity": event.activity,
+            "start_time": event.start_time.isoformat(),
+            "end_time": event.end_time.isoformat(),
+        }
+    elif agent_response.missing_fields:
+        st.warning("Missing: " + ", ".join(agent_response.missing_fields))
 
-        updated_df["Date"] = pd.to_datetime(updated_df["Date"], errors="coerce").dt.date
-        updated_df = updated_df.sort_values("Date").reset_index(drop=True)
 
-        st.write("📦 Updated CSV preview after deletion:")
-        st.dataframe(updated_df.head(100))
+pending_agent_event = st.session_state.get("pending_agent_event")
+if pending_agent_event:
+    st.write("Proposed event:")
+    st.json(pending_agent_event)
+    confirm_column, cancel_column = st.columns(2)
 
-        if not token:
-            st.error("Missing GITHUB_TOKEN in secrets.toml; cannot push to GitHub.")
-        else:
-            ok, code, text = update_schedule_on_github(updated_df, token, message="Delete event")
-            st.write(f"GitHub response: {code}")
-            if ok:
-                st.success("✅ Event deleted successfully!")
+    with confirm_column:
+        if st.button("Confirm Agent Event", key="confirm_agent_event"):
+            if not token:
+                st.error("GITHUB_TOKEN is required to save the event.")
             else:
-                st.error("❌ Failed to update GitHub")
-                st.code(text)
+                try:
+                    pending_date = date.fromisoformat(
+                        pending_agent_event["date"]
+                    )
+                    pending_start_time = time.fromisoformat(
+                        pending_agent_event["start_time"]
+                    )
+                    pending_end_time = time.fromisoformat(
+                        pending_agent_event["end_time"]
+                    )
+                    current_df = load_schedule_from_github(token)
+                    conflicts = check_conflicts(
+                        current_df,
+                        event_date=pending_date,
+                        start_time=pending_start_time,
+                        end_time=pending_end_time,
+                    )
+
+                    if not conflicts.empty:
+                        st.error(
+                            "The schedule changed and this time now "
+                            "conflicts with another event."
+                        )
+                        st.dataframe(
+                            conflicts.fillna(""),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        updated_df, created_event = create_event(
+                            current_df,
+                            event_date=pending_date,
+                            name=pending_agent_event["name"],
+                            activity=pending_agent_event["activity"],
+                            start_time=pending_start_time,
+                            end_time=pending_end_time,
+                        )
+                        ok, status_code, response_text = (
+                            update_schedule_on_github(
+                                updated_df,
+                                token,
+                                message=(
+                                    "Create event via scheduler agent: "
+                                    f"{created_event['EventId']}"
+                                ),
+                            )
+                        )
+
+                        if ok:
+                            del st.session_state["pending_agent_event"]
+                            st.success("Agent event created successfully.")
+                            st.rerun()
+                        else:
+                            show_github_error(status_code, response_text)
+                except (ValueError, TypeError, KeyError) as exc:
+                    st.error(f"Invalid pending agent event: {exc}")
+                except requests.RequestException as exc:
+                    st.error(f"GitHub request failed: {exc}")
+                except Exception as exc:
+                    st.error(f"Unable to create the agent event: {exc}")
+
+    with cancel_column:
+        if st.button("Cancel Agent Event", key="cancel_agent_event"):
+            del st.session_state["pending_agent_event"]
+            st.info("Proposed event canceled.")
+            st.rerun()
+
+
+st.subheader("Delete Event")
+delete_df = load_schedule_from_github(token)
+
+if delete_df.empty:
+    st.info("No events are available to delete.")
+else:
+    delete_options = {}
+    for _, event_row in delete_df.iterrows():
+        event_label = format_event_label(event_row)
+        delete_options[event_label] = event_row["EventId"]
+
+    selected_delete_label = st.selectbox(
+        "Select event to delete",
+        options=list(delete_options.keys()),
+        key="delete_event_selection",
+    )
+
+    if st.button("Delete Selected Event", key="delete_selected_event"):
+        if not token:
+            st.error("GITHUB_TOKEN is required to delete the event.")
+        else:
+            try:
+                selected_event_id = delete_options[selected_delete_label]
+                current_delete_df = load_schedule_from_github(token)
+                updated_delete_df = current_delete_df[
+                    current_delete_df["EventId"] != selected_event_id
+                ].reset_index(drop=True)
+
+                if len(updated_delete_df) == len(current_delete_df):
+                    st.warning("The selected event no longer exists.")
+                else:
+                    st.write("Preview of the schedule after deletion:")
+                    st.dataframe(
+                        updated_delete_df.fillna(""),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    ok, status_code, response_text = (
+                        update_schedule_on_github(
+                            updated_delete_df,
+                            token,
+                            message=f"Delete event: {selected_event_id}",
+                        )
+                    )
+
+                    if ok:
+                        st.success("Event deleted successfully.")
+                        st.rerun()
+                    else:
+                        show_github_error(status_code, response_text)
+            except requests.RequestException as exc:
+                st.error(f"GitHub request failed: {exc}")
+            except Exception as exc:
+                st.error(f"Unable to delete the event: {exc}")

@@ -4,3 +4,5 @@ requests
 dateparser
 SpeechRecognition
 python-dotenv
+pydantic>=2.7,<3
+ollama>=0.4,<1
