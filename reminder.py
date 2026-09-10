@@ -5,6 +5,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import pandas as pd
 import requests
 
+from services.schedule_service import format_time_12h
+
 CSV_URL = "https://raw.githubusercontent.com/DivKumR/Mypersonal_SchedulerApp/main/schedule.csv"
 
 EMAIL_API_KEY = os.getenv("SENDGRID_API_KEY")
@@ -107,7 +109,8 @@ def check_events():
             minutes_until = max(1, int(diff.total_seconds() // 60) + 1)
             msg = (
                 f"{row['Activity']} for {row['Name']} starts in "
-                f"{minutes_until} minute(s) at {row['StartTime']}."
+                f"{minutes_until} minute(s) at "
+                f"{format_time_12h(row['StartTime'])}."
             )
             send_email(f"Reminder: {row['Activity']}", msg)
             send_push(msg)

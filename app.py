@@ -16,6 +16,7 @@ from services.github_schedule_repository import (
 from services.schedule_service import (
     create_event,
     format_time,
+    format_time_12h,
 )
 
 
@@ -29,9 +30,45 @@ def format_event_label(event_row):
     return (
         f"{event_row['Date']} | {event_row['Name']} | "
         f"{event_row['Activity']} | "
-        f"{format_time(event_row['StartTime'])}-"
-        f"{format_time(event_row['EndTime'])}"
+        f"{format_time_12h(event_row['StartTime'])}-"
+        f"{format_time_12h(event_row['EndTime'])}"
     )
+
+
+def format_schedule_for_display(dataframe):
+    display_df = dataframe.copy()
+    display_df["StartTime"] = display_df["StartTime"].apply(format_time_12h)
+    display_df["EndTime"] = display_df["EndTime"].apply(format_time_12h)
+    return display_df.fillna("")
+
+
+def time_picker(label, key, default_hour, default_period):
+    st.markdown(f"**{label}**")
+    hour_column, minute_column, period_column = st.columns(3)
+    hour = hour_column.selectbox(
+        f"{label} hour",
+        range(1, 13),
+        index=default_hour - 1,
+        key=f"{key}_hour",
+    )
+    minute = minute_column.number_input(
+        f"{label} minute",
+        min_value=0,
+        max_value=59,
+        value=0,
+        step=5,
+        key=f"{key}_minute",
+    )
+    period = period_column.selectbox(
+        f"{label} AM/PM",
+        ["AM", "PM"],
+        index=0 if default_period == "AM" else 1,
+        key=f"{key}_period",
+    )
+    return datetime.strptime(
+        f"{hour}:{minute:02d} {period}",
+        "%I:%M %p",
+    ).time()
 
 
 def parse_quick_entry(value):
@@ -192,7 +229,7 @@ def render_next_event_timer(dataframe, app_timezone):
 
     st.metric("Next event", event_row["Activity"], countdown)
     st.caption(
-        f"{event_start.strftime('%a, %d %b %Y at %H:%M')} · "
+        f"{event_start.strftime('%a, %d %b %Y at %I:%M %p')} · "
         f"{event_row['Name']}"
     )
 
@@ -226,7 +263,7 @@ with today_tab:
         st.info("No events scheduled today.")
     else:
         st.dataframe(
-            today_df.fillna(""),
+            format_schedule_for_display(today_df),
             use_container_width=True,
             hide_index=True,
         )
@@ -276,8 +313,18 @@ with add_tab:
     st.divider()
     manual_activity = st.text_input("Activity", key="manual_activity")
     manual_date = st.date_input("Date", key="manual_date")
-    manual_start_time = st.time_input("Start time", key="manual_start_time")
-    manual_end_time = st.time_input("End time", key="manual_end_time")
+    manual_start_time = time_picker(
+        "Start time",
+        "manual_start_time",
+        default_hour=9,
+        default_period="AM",
+    )
+    manual_end_time = time_picker(
+        "End time",
+        "manual_end_time",
+        default_hour=10,
+        default_period="AM",
+    )
 
     if st.button("Add Event", key="add_manual_event", use_container_width=True):
         if not token:
@@ -331,7 +378,7 @@ with calendar_tab:
         na_position="last",
     ).reset_index(drop=True)
     st.dataframe(
-        display_df.fillna(""),
+        format_schedule_for_display(display_df),
         use_container_width=True,
         hide_index=True,
     )

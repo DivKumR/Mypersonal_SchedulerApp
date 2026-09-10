@@ -54,6 +54,11 @@ def format_time(value) -> str:
 	return normalized.strftime("%H:%M") if normalized else ""
 
 
+def format_time_12h(value) -> str:
+	normalized = _normalize_time(value)
+	return normalized.strftime("%I:%M %p") if normalized else ""
+
+
 def _parse_event_id(value) -> Optional[int]:
 	if value is None or pd.isna(value):
 		return None

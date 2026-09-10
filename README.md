@@ -95,6 +95,8 @@ Meeting next Monday 2pm to 3pm
 
 When no end time is supplied, the event lasts one hour. Overlapping events are rejected.
 
+Manual entry and displayed schedules use 12-hour time with `AM` or `PM`, such as `06:30 PM`. The CSV keeps canonical 24-hour values internally so sorting, conflict checks, and calendar export remain reliable.
+
 ## Notifications
 
 The app includes two reminder mechanisms:
