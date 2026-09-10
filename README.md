@@ -1,6 +1,6 @@
 # Personal Scheduler
 
-A mobile-friendly Streamlit scheduler that stores events in `schedule.csv` on GitHub. It supports conflict detection, quick entry, today's schedule, deletion, and `.ics` calendar export.
+A mobile-friendly Streamlit scheduler that stores events in `schedule.csv` on GitHub. It supports quick entry, today's schedule, deletion, and `.ics` calendar export.
 
 ## Use the hosted app
 
@@ -93,9 +93,9 @@ Doctor Friday 10am
 Meeting next Monday 2pm to 3pm
 ```
 
-When no end time is supplied, the event lasts one hour. Overlapping events are rejected.
+When no end time is supplied, the event lasts one hour. Multiple events may use the same or overlapping times.
 
-Manual entry and displayed schedules use 12-hour time with `AM` or `PM`, such as `06:30 PM`. The CSV keeps canonical 24-hour values internally so sorting, conflict checks, and calendar export remain reliable.
+Manual entry and displayed schedules use 12-hour time with `AM` or `PM`, such as `06:30 PM`. The CSV keeps canonical 24-hour values internally so sorting and calendar export remain reliable.
 
 ## Notifications
 

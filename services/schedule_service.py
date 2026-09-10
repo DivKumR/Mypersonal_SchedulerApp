@@ -2,7 +2,7 @@
 # The former Time value becomes StartTime.
 # Existing events without an end time default to one hour.
 # Back-to-back events are allowed.
-# Overlapping events are rejected.
+# Multiple events may use the same or overlapping times.
 
 
 from datetime import date, datetime, time
@@ -184,43 +184,6 @@ name: Optional[str] = None,
 	).reset_index(drop=True)
 
 
-def check_conflicts(
-df: pd.DataFrame,
-event_date: date,
-start_time: time,
-end_time: time,
-exclude_event_id: Optional[str] = None,
-) -> pd.DataFrame:
-	if end_time <= start_time:
-		raise ValueError("EndTime must be later than StartTime.")
-
-	events = get_events(df, event_date=event_date)
-
-	if exclude_event_id:
-		events = events[events["EventId"] != exclude_event_id]
-
-	requested_start = datetime.combine(event_date, start_time)
-	requested_end = datetime.combine(event_date, end_time)
-
-	conflicting_indexes = []
-
-	for index, row in events.iterrows():
-		existing_start_time = _normalize_time(row["StartTime"])
-		existing_end_time = _normalize_time(row["EndTime"])
-
-		if existing_start_time is None or existing_end_time is None:
-			continue
-
-		existing_start = datetime.combine(event_date, existing_start_time)
-		existing_end = datetime.combine(event_date, existing_end_time)
-
-		# Two intervals conflict when each starts before the other ends.
-		if requested_start < existing_end and requested_end > existing_start:
-			conflicting_indexes.append(index)
-
-	return events.loc[conflicting_indexes].reset_index(drop=True)
-
-
 def create_event(
 df: pd.DataFrame,
 event_date: date,
@@ -239,19 +202,6 @@ end_time: time,
 		raise ValueError("EndTime must be later than StartTime.")
 
 	current = sanitize_schedule_df(df)
-
-	conflicts = check_conflicts(
-		current,
-		event_date=event_date,
-		start_time=start_time,
-		end_time=end_time,
-	)
-
-	if not conflicts.empty:
-		conflict_names = ", ".join(
-			conflicts["Activity"].astype(str).tolist()
-		)
-		raise ValueError(f"Schedule conflict with: {conflict_names}")
 
 	numeric_ids = current["EventId"].apply(_parse_event_id).dropna()
 	next_event_id = int(numeric_ids.max()) + 1 if not numeric_ids.empty else 1
