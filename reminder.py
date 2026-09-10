@@ -64,26 +64,29 @@ def check_events():
     now = datetime.datetime.utcnow()  # GitHub Actions uses UTC
 
     for _, row in df.iterrows():
-        date = row["Date"]
-        time = normalize_time(row["Time"])
+        event_date = row["Date"]
+        start_time = normalize_time(row["StartTime"])
 
-        if pd.isna(date):
+        if pd.isna(event_date):
             continue
 
         try:
             # If time is empty, parse date only
-            if time == "":
-                event_dt = pd.to_datetime(date)
+            if start_time == "":
+                event_dt = pd.to_datetime(event_date)
             else:
-                event_dt = datetime.datetime.strptime(f"{date} {time}", "%Y-%m-%d %I %p")
-        except:
+                event_dt = pd.to_datetime(f"{event_date} {start_time}")
+        except (TypeError, ValueError):
             continue
 
         diff = event_dt - now
 
         # Trigger if event is within the next 24 hours
         if datetime.timedelta(0) < diff <= datetime.timedelta(days=1):
-            msg = f"Event tomorrow: {row['Activity']} for {row['Name']} at {row['Time']}"
+            msg = (
+                f"Event tomorrow: {row['Activity']} for {row['Name']} "
+                f"at {row['StartTime']}"
+            )
             send_email("Reminder: Event Tomorrow", msg)
             send_push(msg)
 
